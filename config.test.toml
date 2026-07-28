@@ -1,0 +1,43 @@
+# Test configuration for trein-video (master node)
+# This is a ready-to-use config for local development/testing
+
+[instance]
+id = "test-master"
+role = "master"
+api_port = 8443
+
+[nas]
+protocol = "smb"
+host = "192.168.1.100"
+share = "videos"
+username = "testuser"
+password_env = "NAS_PASSWORD"  # Set: export NAS_PASSWORD=your_password
+base_path = "/videos"
+
+[conversion]
+codec = "av1"
+preset = "fast"
+crf = 32
+max_parallel_jobs = 2
+
+[sync]
+poll_interval_secs = 30
+# master_url not needed for master role
+
+[db]
+path = "~/.cache/trein-video/test-master.db"
+
+[tls]
+# User-writable directory (auto-created)
+cert_path = "~/.config/trein-video/certs/server.crt"
+key_path = "~/.config/trein-video/certs/server.key"
+ca_cert_path = "~/.config/trein-video/certs/ca.crt"
+
+[discovery]
+enabled = true
+service_name = "trein-video-master"
+
+[retry]
+max_attempts = 5
+base_delay_secs = 1
+max_delay_secs = 300

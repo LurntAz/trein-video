@@ -1,0 +1,44 @@
+# Test configuration for trein-video (worker node)
+# This is a ready-to-use config for local development/testing
+
+[instance]
+id = "test-worker-1"
+role = "worker"
+api_port = 8444
+
+[nas]
+protocol = "smb"
+host = "192.168.1.100"
+share = "videos"
+username = "testuser"
+password_env = "NAS_PASSWORD"
+base_path = "/videos"
+
+[conversion]
+codec = "av1"
+preset = "fast"
+crf = 32
+max_parallel_jobs = 2
+
+[sync]
+poll_interval_secs = 30
+# For testing without mDNS, set master_url explicitly:
+# master_url = "https://127.0.0.1:8443"
+
+[db]
+path = "~/.cache/trein-video/test-worker-1.db"
+
+[tls]
+# Reuse same CA and certs from master for testing
+cert_path = "~/.config/trein-video/certs/client.crt"
+key_path = "~/.config/trein-video/certs/client.key"
+ca_cert_path = "~/.config/trein-video/certs/ca.crt"
+
+[discovery]
+enabled = true
+service_name = "trein-video-master"
+
+[retry]
+max_attempts = 5
+base_delay_secs = 2
+max_delay_secs = 300

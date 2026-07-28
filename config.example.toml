@@ -1,0 +1,57 @@
+# Trein Video Converter Configuration Example
+
+[instance]
+id = "instance-1"
+role = "master"  # or "worker"
+api_port = 8000
+
+[nas]
+protocol = "smb"
+host = "192.168.1.100"
+share = "videos"
+username = "user"
+password = "pass"  # or use env: NAS_PASSWORD
+base_path = "/videos"
+
+[conversion]
+codec = "av1"  # or "h265"
+preset = "slow"  # libsvtav1 presets: ultrafast, superfast, veryfast, faster, fast, medium, slow, slower, veryslow
+crf = 32  # quality (lower = better). AV1: 0-63. Default: 32 (good balance)
+max_parallel_jobs = 3
+
+[sync]
+poll_interval_secs = 30
+master_url = "https://192.168.1.10:8000"  # worker pointe vers master (set master_url for workers only)
+
+[db]
+# SQLite database path (auto-created if missing)
+path = "~/.cache/trein-video/videos.db"
+
+[tls]
+# Certificates paths. Auto-generate at startup if missing (self-signed)
+# Use home directory for dev/test, /etc/trein-video for production (requires root)
+cert_path = "~/.config/trein-video/certs/server.crt"
+key_path = "~/.config/trein-video/certs/server.key"
+ca_cert_path = "~/.config/trein-video/certs/ca.crt"
+
+[discovery]
+# mDNS discovery. Can be disabled if using config file master_url
+enabled = true
+service_name = "trein-video-master"
+
+[retry]
+# Retry policy for transient network/IO errors (NAS downloads/uploads,
+# master sync). Optional: omitting this section falls back to these same
+# defaults.
+max_attempts = 5
+base_delay_secs = 1
+max_delay_secs = 300
+
+[discord]
+# Discord webhook notification, posted by the worker when a video
+# conversion job completes. Optional: omitting this section disables the
+# feature. `enabled` defaults to true if this section is present but the
+# key itself is omitted.
+enabled = true
+# Create via: Server Settings > Integrations > Webhooks > New Webhook
+webhook_url = "https://discord.com/api/webhooks/XXXXXXXXXXXXXXXXXX/YYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYY"
