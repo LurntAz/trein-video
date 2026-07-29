@@ -267,6 +267,7 @@ mod tests {
             username: "user".to_string(),
             password: Some("super-secret".to_string()),
             base_path: "/videos".to_string(),
+            password_env: None,
         };
         let debug_output = format!("{:?}", nas);
         assert!(!debug_output.contains("super-secret"));
@@ -388,6 +389,7 @@ mod tests {
             username: "user".to_string(),
             password: None,
             base_path: "/videos".to_string(),
+            password_env: None,
         };
         let debug_output = format!("{:?}", nas);
         assert!(debug_output.contains("password: None"));

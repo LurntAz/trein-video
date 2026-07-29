@@ -282,6 +282,16 @@ mod tests {
 
     #[test]
     fn test_is_video_file() {
+        // Create an in-memory SQLite pool for testing
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let pool = rt.block_on(async {
+            sqlx::sqlite::SqlitePoolOptions::new()
+                .max_connections(1)
+                .connect("sqlite::memory:")
+                .await
+                .unwrap()
+        });
+
         let discovery = VideoDiscovery {
             smb_client: Arc::new(SmbClient::new(
                 "192.168.1.100".to_string(),
@@ -289,9 +299,7 @@ mod tests {
                 "user".to_string(),
                 Some("pass".to_string()),
             )),
-            repository: Arc::new(crate::db::Repository::new(
-                sqlx::sqlite::SqlitePool::default(),
-            )),
+            repository: Arc::new(crate::db::Repository::new(pool)),
             base_path: "/videos".to_string(),
         };
 

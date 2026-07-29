@@ -40,7 +40,7 @@ pub trait JobRunner: Send + Sync {
 /// counter. Claiming is delegated to [`Repository::claim_next_pending`], the
 /// atomic `UPDATE ... RETURNING` that replaces the racy `get_pending_videos`
 /// + `update_video_status` pair (see that method's docs for why the old
-/// approach could hand the same video to two workers at once).
+///   approach could hand the same video to two workers at once).
 pub struct JobQueue {
     repository: Arc<Repository>,
     runner: Arc<dyn JobRunner>,

@@ -488,8 +488,9 @@ impl ProcessorOrchestrator {
         let sanitized_id = video
             .id
             .trim_start_matches('/')
-            .replace('/', "_")
-            .replace('\\', "_");
+            .chars()
+            .map(|c| if c == '/' || c == '\\' { '_' } else { c })
+            .collect::<String>();
         let job_dir = self.work_dir.join(&sanitized_id);
         tokio::fs::create_dir_all(&job_dir)
             .await
