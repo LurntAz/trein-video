@@ -1,6 +1,7 @@
+use crate::cli;
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Config {
@@ -184,7 +185,73 @@ fn expand_tilde_path(path: &str) -> String {
     path.to_string()
 }
 
-pub fn load_config<P: AsRef<Path>>(path: P) -> Result<Config> {
+/// The documented example config shipped at the repo root, embedded at
+/// compile time. Written verbatim to disk as the first-run template (see
+/// [`load_config`]) so a fresh install always ships the same up-to-date,
+/// commented reference rather than a hand-maintained duplicate that can
+/// drift out of sync.
+const CONFIG_TEMPLATE: &str = include_str!("../config.example.toml");
+
+/// Resolve the config path (an explicit `--config`, or the platform default
+/// from [`cli::default_config_path`]), then load and validate it.
+///
+/// First-run behavior: if the resolved path does not exist, a copy of the
+/// documented example config is written there (parent directories are
+/// created as needed), the path and its contents are printed for the user,
+/// and this returns `Err` so the process exits non-zero -- there is nothing
+/// sensible to run with yet (NAS host/credentials, instance id, etc. are all
+/// per-user and cannot be guessed), so the caller must edit the file and
+/// re-run rather than silently proceeding with placeholder values.
+///
+/// An existing file at the resolved path is always loaded as-is and is
+/// never overwritten, even if it fails to parse or validate -- only a
+/// genuinely *missing* file gets a template written for it.
+pub fn load_config(explicit_path: Option<PathBuf>) -> Result<Config> {
+    let path = match explicit_path {
+        Some(p) => p,
+        None => cli::default_config_path().ok_or_else(|| {
+            anyhow::anyhow!(
+                "could not determine the default config directory for this platform \
+                 (no home directory found); pass --config <path> explicitly"
+            )
+        })?,
+    };
+
+    if !path.exists() {
+        write_first_run_template(&path)?;
+        eprintln!(
+            "No config file found at {}\n\n\
+             A default configuration template has been written there:\n\n\
+             ----------------------------------------------------------------\n\
+             {}\
+             ----------------------------------------------------------------\n\n\
+             Edit this file (NAS host/credentials, instance id/role, etc.) and re-run.",
+            path.display(),
+            CONFIG_TEMPLATE
+        );
+        anyhow::bail!(
+            "no config file found; a template was written to {} -- edit it and re-run",
+            path.display()
+        );
+    }
+
+    load_config_file(&path)
+}
+
+/// Write [`CONFIG_TEMPLATE`] to `path`, creating parent directories as
+/// needed. Only ever called by [`load_config`] after confirming `path`
+/// doesn't already exist, so there is never anything at `path` to clobber.
+fn write_first_run_template(path: &Path) -> Result<()> {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    std::fs::write(path, CONFIG_TEMPLATE)?;
+    Ok(())
+}
+
+/// Load, tilde-expand and validate a config file that is known to already
+/// exist at `path`.
+fn load_config_file<P: AsRef<Path>>(path: P) -> Result<Config> {
     let content = std::fs::read_to_string(path)?;
     let mut config: Config = toml::from_str(&content)?;
 
@@ -253,9 +320,70 @@ fn validate_config(config: &Config) -> Result<()> {
 mod tests {
     use super::*;
 
+    /// Reused across the `load_config`/first-run tests below: a known-valid
+    /// config, so tests can focus purely on path-resolution/first-run
+    /// behavior rather than also having to hand-build a full [`Config`].
+    const VALID_TEST_CONFIG: &str = include_str!("../config.test.toml");
+
     #[test]
-    fn test_load_config() {
-        // Config will be tested with actual TOML file
+    fn test_load_config_loads_existing_valid_config() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        std::fs::write(&path, VALID_TEST_CONFIG).unwrap();
+
+        let config = load_config(Some(path.clone())).unwrap();
+        assert_eq!(config.instance.id, "test-master");
+        // File must still exist and be untouched (still a valid config,
+        // no template overwrite) after a successful load.
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), VALID_TEST_CONFIG);
+    }
+
+    #[test]
+    fn test_load_config_missing_file_writes_template_and_errors() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        assert!(!path.exists());
+
+        let err = load_config(Some(path.clone())).unwrap_err();
+
+        // Template was written to the resolved path...
+        assert!(path.exists());
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), CONFIG_TEMPLATE);
+        // ...and the call itself is an error (non-zero exit for the caller),
+        // not a silent success with placeholder values.
+        let message = format!("{err}");
+        assert!(message.to_lowercase().contains("no config file"));
+    }
+
+    #[test]
+    fn test_load_config_creates_parent_directories_for_template() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("nested").join("dirs").join("config.toml");
+        assert!(!path.parent().unwrap().exists());
+
+        let _ = load_config(Some(path.clone())).unwrap_err();
+
+        assert!(path.exists());
+    }
+
+    #[test]
+    fn test_load_config_never_overwrites_existing_invalid_config() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        let garbage = "this is not valid toml {{{";
+        std::fs::write(&path, garbage).unwrap();
+
+        // Loading must fail (it's not valid TOML)...
+        let err = load_config(Some(path.clone())).unwrap_err();
+        let message = format!("{err}");
+        // ...but the failure must come from the TOML parser, not from the
+        // "no config file" first-run path, and the file on disk must be
+        // completely untouched -- never replaced with the template.
+        assert!(
+            !message.to_lowercase().contains("no config file"),
+            "an existing (even invalid) file must never be treated as first-run: {message}"
+        );
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), garbage);
     }
 
     #[test]
