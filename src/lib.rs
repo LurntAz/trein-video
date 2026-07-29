@@ -11,7 +11,6 @@ pub mod discord;
 pub mod error;
 pub mod nas;
 pub mod progress;
-pub mod startup;
 pub mod sync;
 pub mod tls;
 pub mod utils;

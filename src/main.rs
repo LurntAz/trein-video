@@ -2,7 +2,7 @@ use anyhow::Result;
 use std::sync::Arc;
 use std::time::Duration;
 use tracing::{error, info, warn};
-use trein_video::{api, cli, config, db, nas, startup, sync, video, worker};
+use trein_video::{api, cli, config, db, nas, sync, video, worker};
 
 /// Initialize the global `tracing` subscriber.
 ///
@@ -106,37 +106,6 @@ async fn run_master(config: config::Config) -> Result<()> {
     use nas::SmbClient;
 
     info!(port = config.instance.api_port, "Master initializing");
-
-    // #32: validate the critical external connections (database, NAS) work,
-    // and that Discord (if configured) looks reachable, before the rest of
-    // startup proceeds. Every individual check is best-effort and
-    // non-fatal -- mirrors `check_required_binaries()` in `main()` above --
-    // so a temporarily-down NAS or a Discord outage never blocks the API
-    // server, mDNS discovery, or sync coordination with workers from coming
-    // up; only the summary is logged here. If the database itself can't
-    // even be opened, that's a harder failure than preflight is meant to
-    // catch and it surfaces on its own shortly after, via `DbConnection::new`
-    // inside the video-discovery setup below and inside `ApiServer::start`.
-    match DbConnection::new(&config.db.path).await {
-        Ok(preflight_db) => {
-            let checks = startup::run_preflight_checks(&config, &preflight_db).await;
-            let errors = checks
-                .iter()
-                .filter(|c| c.status == startup::CheckStatus::Error)
-                .count();
-            if errors > 0 {
-                warn!(
-                    errors,
-                    "preflight: {errors} check(s) failed; continuing startup anyway"
-                );
-            } else {
-                info!("preflight: all checks passed");
-            }
-        }
-        Err(e) => {
-            warn!(error = %e, "preflight: could not open database connection to run checks");
-        }
-    }
 
     let mut discovery_handle = None;
     if config.discovery.enabled {

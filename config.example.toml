@@ -1,17 +1,8 @@
 # Trein Video Converter Configuration Example
 
 [instance]
-# Unique identifier for this instance
-# Examples: "master-1", "worker-gpu-01", "worker-cpu-02"
 id = "instance-1"
-
-# Role of this instance:
-# - "master": Central orchestrator (starts first, manages jobs, hosts API)
-# - "worker": Video converter (connects to master, processes jobs)
-role = "master"
-
-# HTTP API port (used by master for job API, used by workers to contact master)
-# Default: 8000. Make sure this port is accessible between master and workers.
+role = "master"  # or "worker"
 api_port = 8000
 
 [nas]
@@ -19,50 +10,21 @@ protocol = "smb"
 host = "192.168.1.100"
 share = "videos"
 username = "user"
-
-# Password can be provided via:
-# Option 1: Direct in config (⚠️  not recommended in production)
-password = "pass"
-
-# Option 2: Read from environment variable (recommended for security)
-# password_env = "NAS_PASSWORD"
-# Then run: export NAS_PASSWORD="your_password" && ./trein-video-master
-
+password = "pass"  # or use env: NAS_PASSWORD
 base_path = "/videos"
 
 [conversion]
-# Video codec to use for encoding
-# Options: "av1" (best quality, slower), "h265" (faster, good quality)
-codec = "av1"
-
-# Encoding preset (quality vs speed tradeoff)
-# AV1 presets: ultrafast, superfast, veryfast, faster, fast, medium, slow, slower, veryslow
-# (lower number = faster encode, lower quality)
-preset = "slow"
-
-# Quality level (lower = better quality, takes longer)
-# AV1: 0-63 (default: 32 = good balance)
-# H.265: typically 0-51 (same scale as AV1)
-crf = 32
-
-# Maximum number of parallel encoding jobs (CPU bound)
-# Recommended: number of CPU cores - 1
+codec = "av1"  # or "h265"
+preset = "slow"  # libsvtav1 presets: ultrafast, superfast, veryfast, faster, fast, medium, slow, slower, veryslow
+crf = 32  # quality (lower = better). AV1: 0-63. Default: 32 (good balance)
 max_parallel_jobs = 3
 
 [sync]
-# How often workers check master for new jobs (in seconds)
 poll_interval_secs = 30
-
-# Master URL: REQUIRED FOR WORKERS, IGNORED FOR MASTER
-# Set this if instance.role = "worker"
-# Example: "https://192.168.1.10:8000" or "https://master.example.com:8000"
-# master_url = "https://192.168.1.10:8000"
+master_url = "https://192.168.1.10:8000"  # worker pointe vers master (set master_url for workers only)
 
 [db]
-# SQLite database file path (auto-created if missing, including parent directories)
-# Supports ~ for home directory expansion on macOS/Linux
-# Windows: use absolute paths or %USERPROFILE% (which gets expanded)
-# Note: Only the master instance needs direct DB access; workers sync via API
+# SQLite database path (auto-created if missing)
 path = "~/.cache/trein-video/videos.db"
 
 [tls]
@@ -77,25 +39,12 @@ ca_cert_path = "~/.config/trein-video/certs/ca.crt"
 enabled = true
 service_name = "trein-video-master"
 
-[video_discovery]
-# Automatic NAS video discovery (scans the NAS folder periodically)
-enabled = true
-# Scan interval in seconds (default: 3600 = 1 hour)
-interval_secs = 3600
-
 [retry]
-# Retry policy for transient network/IO errors (NAS file access, master sync)
-# This section is optional; if omitted, these defaults apply.
-# Uses exponential backoff: delay = base_delay * 2^(attempt-1), capped at max_delay
-
-# Total number of attempts before giving up (includes initial attempt)
+# Retry policy for transient network/IO errors (NAS downloads/uploads,
+# master sync). Optional: omitting this section falls back to these same
+# defaults.
 max_attempts = 5
-
-# Initial delay in seconds (for first retry)
 base_delay_secs = 1
-
-# Maximum delay in seconds (backoff never exceeds this, prevents infinite waits)
-# Example with base_delay=1: delays are 1s, 2s, 4s, 8s, 16s, ... capped at 300s
 max_delay_secs = 300
 
 [discord]
