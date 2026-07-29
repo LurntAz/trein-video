@@ -21,3 +21,4 @@ target
 #.idea/
 
 .tkt/
+.DS_Store
