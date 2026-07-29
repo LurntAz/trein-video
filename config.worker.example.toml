@@ -1,0 +1,83 @@
+# Trein Video Worker Configuration Example
+# Copy and modify this file for each worker node
+# Place at: ~/.config/trein-video/config.toml
+
+[instance]
+# Unique worker identifier (change for each worker: worker-01, worker-02, etc)
+id = "worker-01"
+# Always "worker" for worker nodes (master uses "role = master")
+role = "worker"
+# Each worker can use different port (default 8444)
+# If running multiple workers on same machine, use 8444, 8445, 8446, etc
+api_port = 8444
+
+[nas]
+# Must be IDENTICAL to master configuration
+protocol = "smb"
+host = "192.168.1.100"
+share = "videos"
+username = "user"
+# Load password from environment variable (safer than storing in config)
+# Set via: export NAS_PASSWORD="your-password"
+password_env = "NAS_PASSWORD"
+base_path = "/videos"
+
+[conversion]
+# Codec: "av1" or "h265"
+codec = "av1"
+# Encoding preset (lower number = faster, higher quality = slower)
+# libsvtav1 presets: ultrafast, superfast, veryfast, faster, fast, medium, slow, slower, veryslow
+# Recommendation: use "fast" for workers, "medium" for master
+preset = "fast"
+# CRF (Constant Rate Factor): 0-63, lower = better quality
+# Recommended: 28-32 (good balance)
+crf = 32
+# Max parallel encoding jobs on this worker
+# Recommendation: (CPU_CORES / 2) to avoid maxing out CPU
+# Example: 4 cores = 2 jobs, 8 cores = 4 jobs
+max_parallel_jobs = 2
+
+[sync]
+# How often to poll master for new jobs (in seconds)
+poll_interval_secs = 30
+# Master URL - REQUIRED for workers
+# Can be IP address or hostname
+# Must match master's [instance] api_port (default 8443)
+master_url = "https://192.168.1.10:8443"
+
+[db]
+# SQLite database for tracking worker state
+# Auto-created if missing
+# IMPORTANT: Must be on local filesystem (not NFS)
+# Each worker should have separate database
+path = "~/.cache/trein-video/worker-01.db"
+
+[tls]
+# Client certificates for mTLS communication with master
+# Copy these from master after initial setup
+cert_path = "~/.config/trein-video/certs/client.crt"
+key_path = "~/.config/trein-video/certs/client.key"
+# CA certificate (trust anchor for verifying master's certificate)
+ca_cert_path = "~/.config/trein-video/certs/ca.crt"
+
+[discovery]
+# Enable mDNS service discovery (auto-find master on local network)
+# Set to false if using explicit master_url instead
+enabled = true
+# mDNS service name (must match master's announcement)
+service_name = "trein-video-master"
+
+[retry]
+# Retry policy for transient failures (network timeouts, temporary SMB issues)
+# Maximum number of retry attempts
+max_attempts = 5
+# Initial retry delay (in seconds)
+base_delay_secs = 2
+# Maximum retry delay (exponential backoff capped at this value)
+max_delay_secs = 300  # 5 minutes
+
+# Optional: Discord notifications (same config as master)
+# Disabled by default if omitted
+# [discord]
+# enabled = true
+# webhook_url = "https://discord.com/api/webhooks/YOUR_WEBHOOK_ID/YOUR_WEBHOOK_TOKEN"
