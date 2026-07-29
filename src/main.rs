@@ -1,8 +1,9 @@
 use anyhow::Result;
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 use tracing::{error, info, warn};
-use trein_video::{api, cli, config, db, nas, sync, video, worker};
+use trein_video::{api, cli, config, db, nas, startup, sync, video, worker};
 
 /// Initialize the global `tracing` subscriber.
 ///
@@ -38,6 +39,10 @@ async fn main() -> Result<()> {
     init_logging();
 
     let args = cli::parse_args();
+    // Resolved before `load_config` consumes `args.config`, purely for
+    // display in the master startup summary (#33) -- `load_config` already
+    // does the equivalent resolution internally.
+    let config_path = args.config.clone().or_else(cli::default_config_path);
     let config = config::load_config(args.config)?;
 
     info!(
@@ -58,7 +63,7 @@ async fn main() -> Result<()> {
     match config.instance.role.as_str() {
         "master" => {
             info!("Starting as MASTER instance");
-            run_master(config).await?;
+            run_master(config, config_path).await?;
         }
         "worker" => {
             info!("Starting as WORKER instance");
@@ -98,14 +103,148 @@ async fn check_required_binaries() -> std::result::Result<(), Vec<&'static str>>
     }
 }
 
-async fn run_master(config: config::Config) -> Result<()> {
+async fn run_master(config: config::Config, config_path: Option<PathBuf>) -> Result<()> {
     use api::discovery::ServiceDiscovery;
     use api::server::ApiServer;
     use api::video_discovery::VideoDiscovery;
     use db::{DbConnection, Repository};
     use nas::SmbClient;
+    use startup::summary::{count_indexes, count_tables, redact_webhook};
+    use startup::{run_preflight_checks, CheckStatus};
 
     info!(port = config.instance.api_port, "Master initializing");
+
+    // --- #33: orchestrate #30 (config, already loaded)/#31 (DB schema)/
+    // #32 (preflight) up front, before mDNS/video-discovery/the API server
+    // -- there's no point publishing this instance or scanning the NAS on
+    // a schedule if the DB itself is broken. `DbConnection::new` already
+    // runs migrations, `verify_db_schema` and `create_optimized_indexes`
+    // (#31) internally.
+    let db_connection = DbConnection::new(&config.db.path).await?;
+    let repository = Arc::new(Repository::new(db_connection.pool().clone()));
+
+    let checks = run_preflight_checks(&config, &db_connection).await;
+    let db_check = checks
+        .iter()
+        .find(|c| c.name == "Database")
+        .expect("run_preflight_checks always includes a Database check");
+    let nas_check = checks
+        .iter()
+        .find(|c| c.name == "NAS")
+        .expect("run_preflight_checks always includes a NAS check");
+    let discord_check = checks
+        .iter()
+        .find(|c| c.name == "Discord")
+        .expect("run_preflight_checks always includes a Discord check");
+
+    let tables = count_tables(db_connection.pool()).await.unwrap_or(0);
+    let indexes = count_indexes(db_connection.pool()).await.unwrap_or(0);
+
+    // Log password status for debugging (kept from the pre-#33 video
+    // discovery setup below, computed once here since the same `SmbClient`
+    // is now shared between the preflight file-count probe and video
+    // discovery).
+    let pwd = config.nas.get_password();
+    if pwd.is_some() {
+        info!("NAS: password loaded successfully");
+    } else {
+        warn!("NAS: PASSWORD NOT FOUND! Check NAS_PASSWORD env var");
+    }
+    let smb_client = Arc::new(SmbClient::new(
+        config.nas.host.clone(),
+        config.nas.share.clone(),
+        config.nas.username.clone(),
+        pwd.clone(),
+    ));
+
+    // Best-effort file listing purely to populate the summary's "listed N
+    // files" figure -- `nas_check` above already determined reachability
+    // (pass/fail); this never changes that outcome, only decorates it.
+    let file_count = if nas_check.status != CheckStatus::Error {
+        smb_client
+            .list_videos(&config.nas.base_path)
+            .await
+            .ok()
+            .map(|entries| entries.len())
+    } else {
+        None
+    };
+
+    let summary = startup::StartupSummary {
+        instance_id: config.instance.id.clone(),
+        config_path: config_path.unwrap_or_else(|| PathBuf::from("<unresolved>")),
+        codec: config.conversion.codec.clone(),
+        preset: config.conversion.preset.clone(),
+        max_parallel_jobs: config.conversion.max_parallel_jobs,
+        db: startup::DbInfo {
+            tables,
+            indexes,
+            // See `SqlitePoolOptions::max_connections` in
+            // `db::connection::DbConnection::new` -- not exposed by `sqlx`
+            // at runtime, so mirrored here as the one place both need it.
+            pool_size: 5,
+            status: db_check.status,
+            message: db_check.message.clone(),
+        },
+        nas: startup::NasInfo {
+            host: config.nas.host.clone(),
+            share: config.nas.share.clone(),
+            base_path: config.nas.base_path.clone(),
+            file_count,
+            status: nas_check.status,
+            message: nas_check.message.clone(),
+        },
+        discord: startup::DiscordInfo {
+            enabled: config.discord.enabled,
+            webhook_redacted: config
+                .discord
+                .enabled
+                .then(|| redact_webhook(&config.discord.webhook_url)),
+            status: discord_check.status,
+            message: discord_check.message.clone(),
+        },
+        api: startup::ApiInfo {
+            bind_addr: "0.0.0.0".to_string(),
+            port: config.instance.api_port,
+        },
+    };
+
+    info!(
+        instance_id = %summary.instance_id,
+        config_path = %summary.config_path.display(),
+        codec = %summary.codec,
+        preset = %summary.preset,
+        max_parallel_jobs = summary.max_parallel_jobs,
+        db_status = ?summary.db.status,
+        db_tables = summary.db.tables,
+        db_indexes = summary.db.indexes,
+        nas_status = ?summary.nas.status,
+        nas_file_count = ?summary.nas.file_count,
+        discord_enabled = summary.discord.enabled,
+        discord_status = ?summary.discord.status,
+        api_port = summary.api.port,
+        "Master startup summary"
+    );
+
+    // The boxed summary itself is a human-facing terminal artifact,
+    // deliberately printed to stdout rather than through `tracing` (which
+    // the `info!` call above already covers for logs/aggregation).
+    println!("{}", summary.render());
+
+    if summary.has_critical_failure() {
+        error!(
+            db_status = ?summary.db.status,
+            nas_status = ?summary.nas.status,
+            "Critical preflight failure (DB and/or NAS); aborting master startup"
+        );
+        anyhow::bail!(
+            "master startup aborted: critical preflight check failed (db: {:?}, nas: {:?}); \
+             see the startup summary above for details",
+            summary.db.status,
+            summary.nas.status
+        );
+    }
+    // --- end #33 orchestration -------------------------------------------
 
     let mut discovery_handle = None;
     if config.discovery.enabled {
@@ -123,22 +262,6 @@ async fn run_master(config: config::Config) -> Result<()> {
     if config.video_discovery.enabled {
         info!("Setting up video discovery");
 
-        // Log password status for debugging
-        let pwd = config.nas.get_password();
-        if pwd.is_some() {
-            info!("Video discovery: password loaded successfully");
-        } else {
-            warn!("Video discovery: PASSWORD NOT FOUND! Check NAS_PASSWORD env var");
-        }
-
-        let db_connection = DbConnection::new(&config.db.path).await?;
-        let repository = Arc::new(Repository::new(db_connection.pool().clone()));
-        let smb_client = Arc::new(SmbClient::new(
-            config.nas.host.clone(),
-            config.nas.share.clone(),
-            config.nas.username.clone(),
-            pwd,
-        ));
         let video_discovery = Arc::new(VideoDiscovery::new(
             smb_client,
             repository,
