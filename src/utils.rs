@@ -18,11 +18,11 @@ mod tests {
 
     #[test]
     fn test_bytes_to_mb() {
-        assert_eq!(bytes_to_mb(1_000_000), 0.9536743164062500);
+        assert_eq!(bytes_to_mb(1_000_000), 0.953_674_316_406_25);
     }
 
     #[test]
     fn test_bytes_to_gb() {
-        assert_eq!(bytes_to_gb(1_000_000_000), 0.9313225746154785);
+        assert_eq!(bytes_to_gb(1_000_000_000), 0.931_322_574_615_478_5);
     }
 }

@@ -114,12 +114,8 @@ impl VideoDiscovery {
             folder.replace('/', "\\")
         };
 
-        // Try to get password from Option or from environment
-        let password = self.smb_client.password.clone().or_else(|| {
-            // If password is None, we may need to check env vars
-            // But this is already handled by the config loader via get_password()
-            None
-        });
+        // Password is already handled by the config loader via get_password()
+        let password = self.smb_client.password.clone();
 
         let userpass = match password {
             Some(pwd) => format!("{}%{}", self.smb_client.username, pwd),
@@ -173,6 +169,7 @@ impl VideoDiscovery {
 
     /// Insert the video if it doesn't already exist (by file_path).
     /// Returns Ok(true) if inserted, Ok(false) if already exists.
+    #[allow(dead_code)]
     async fn insert_if_new(&self, file_path: &str) -> Result<bool, String> {
         let existing = self
             .repository
