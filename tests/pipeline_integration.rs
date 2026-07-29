@@ -153,6 +153,7 @@ impl JobRunner for FakePipelineRunner {
                 max_delay_secs: 0,
             },
             test_progress_tx(),
+            None,
         );
         Box::pin(async move { orchestrator.process_one(video).await })
     }
@@ -475,6 +476,7 @@ async fn test_full_pipeline_with_real_ffmpeg_analyze_and_convert() {
         "av1".to_string(),
         RetryConfig::default(),
         test_progress_tx(),
+        None,
     );
 
     let result = orchestrator.process_one(claimed).await;

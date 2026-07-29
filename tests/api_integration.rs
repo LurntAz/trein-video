@@ -12,8 +12,8 @@ use std::sync::Arc;
 use std::time::Duration;
 use trein_video::api::server::ApiServer;
 use trein_video::config::{
-    Config, ConversionConfig, DbConfig, DiscoveryConfig, InstanceConfig, NasConfig, RetryConfig,
-    SyncConfig, TlsConfig,
+    Config, ConversionConfig, DbConfig, DiscordConfig, DiscoveryConfig, InstanceConfig, NasConfig,
+    RetryConfig, SyncConfig, TlsConfig, VideoDiscoveryConfig,
 };
 use trein_video::db::{DbConnection, Repository, Video};
 use trein_video::sync::{Coordinator, HttpMasterClient, SyncError};
@@ -38,6 +38,7 @@ fn master_config(dir: &std::path::Path) -> Config {
             username: "user".to_string(),
             password: None,
             base_path: "/videos".to_string(),
+            password_env: None,
         },
         conversion: ConversionConfig {
             codec: "av1".to_string(),
@@ -61,7 +62,9 @@ fn master_config(dir: &std::path::Path) -> Config {
             enabled: false,
             service_name: "test".to_string(),
         },
+        video_discovery: VideoDiscoveryConfig::default(),
         retry: RetryConfig::default(),
+        discord: DiscordConfig::default(),
     }
 }
 

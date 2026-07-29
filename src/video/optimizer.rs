@@ -106,11 +106,6 @@ impl EncodingOptimizer {
     /// #19's plan edge case). Never picks a *slower* preset than what was
     /// configured, only ever caps toward faster.
     fn compute_preset(metadata: &VideoMetadata, config: &ConversionConfig) -> String {
-        // AV1 uses numeric presets (0-13), not named presets. Pass them through unchanged.
-        if config.codec == "av1" {
-            return config.preset.clone();
-        }
-
         const PRESET_ORDER: [&str; 9] = [
             "veryslow",
             "slower",
@@ -127,8 +122,8 @@ impl EncodingOptimizer {
         let configured_rank = PRESET_ORDER
             .iter()
             .position(|p| *p == config.preset)
-            // Unknown/custom preset string: assume it's roughly as slow as
-            // "slow" rather than refusing to cap it at all.
+            // For numeric presets (e.g., AV1 0-13) or unknown strings,
+            // assume roughly as slow as "slow" (rank 2) rather than refusing to cap.
             .unwrap_or(2);
 
         let is_large_or_long = metadata.filesize_bytes > Self::LARGE_FILE_BYTES
