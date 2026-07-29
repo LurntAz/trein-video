@@ -1,6 +1,17 @@
-use anyhow::Result;
+use anyhow::{Context, Result};
 use sqlx::sqlite::{SqliteConnectOptions, SqlitePool, SqlitePoolOptions};
 use std::path::Path;
+
+/// Tables that must exist once migrations have run successfully. `videos`,
+/// `instances`, and `conversion_logs` come from `0000_init.sql`;
+/// `_sqlx_migrations` is created and maintained by `sqlx::migrate!` itself,
+/// so its absence means migrations never actually ran against this
+/// connection at all (as opposed to a partially-applied schema).
+///
+/// There is no `job_queue` table: the job queue (#10, #17) is implemented as
+/// a `status`/`instance_id`/`claimed_at` state machine over `videos` rather
+/// than a separate table -- see `Repository::claim_next_pending`.
+const EXPECTED_TABLES: &[&str] = &["videos", "instances", "conversion_logs", "_sqlx_migrations"];
 
 pub struct DbConnection {
     pool: SqlitePool,
@@ -68,9 +79,20 @@ impl DbConnection {
             }
         }
 
-        // Run migrations (#17: `attempts`/`last_retry_time` on top of the
-        // baseline schema regenerated in `0000_init.sql`).
+        // Run migrations (#17: `attempts`/`last_retry_time`; #31: indexes on
+        // top of the baseline schema regenerated in `0000_init.sql`).
         sqlx::migrate!("./migrations").run(&pool).await?;
+
+        // #31: don't just trust that `migrate!` produced the schema the rest
+        // of this codebase assumes -- verify it explicitly, with an error
+        // that names exactly what's missing, and fail startup loudly rather
+        // than surfacing a confusing "no such table" error the first time a
+        // query runs. Belt-and-suspenders on top of `create_optimized_indexes`
+        // for the same reason: every instance (master and worker alike) goes
+        // through `DbConnection::new`, so this is the one place guaranteed to
+        // run before this connection serves any query.
+        verify_db_schema(&pool).await?;
+        create_optimized_indexes(&pool).await?;
 
         Ok(Self { pool })
     }
@@ -78,6 +100,102 @@ impl DbConnection {
     pub fn pool(&self) -> &SqlitePool {
         &self.pool
     }
+}
+
+/// Verify that every table this codebase depends on actually exists,
+/// post-migration. Returns a single error listing every missing table by
+/// name (not just the first one hit) so a human fixing a broken deployment
+/// database knows exactly what's wrong without bisecting migrations by hand.
+///
+/// See [`EXPECTED_TABLES`] for why `job_queue` is not among them.
+pub async fn verify_db_schema(pool: &SqlitePool) -> Result<()> {
+    let mut missing = Vec::new();
+
+    for table in EXPECTED_TABLES {
+        let exists: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = ?",
+        )
+        .bind(table)
+        .fetch_one(pool)
+        .await
+        .with_context(|| format!("failed to query sqlite_master for table '{table}'"))?;
+
+        if exists == 0 {
+            missing.push(*table);
+        }
+    }
+
+    if !missing.is_empty() {
+        anyhow::bail!(
+            "database schema verification failed: missing table(s) [{}] after running \
+             migrations -- the database file may be corrupt, from an incompatible version, \
+             or migrations did not run. Check `migrations/` against the current schema and \
+             the `_sqlx_migrations` table's applied-version history before proceeding.",
+            missing.join(", ")
+        );
+    }
+
+    Ok(())
+}
+
+/// Create every index this codebase relies on for query performance, and
+/// refresh the query planner's statistics so it actually uses them.
+///
+/// The same `CREATE INDEX IF NOT EXISTS` statements already live in
+/// `migrations/0002_add_indexes.sql`, which is the source of truth for
+/// schema history; this function re-asserts them at every startup as a
+/// defensive no-op layer (all `IF NOT EXISTS`, so this is always cheap and
+/// never errors on a database that already has them) rather than a
+/// competing source of truth. That way a database whose migration history
+/// is out of sync for any reason -- e.g. `_sqlx_migrations` shows 0002
+/// applied but the index was manually dropped -- still ends up with the
+/// indexes this build's queries expect.
+///
+/// `job_queue.status` / `job_queue.instance_id` from the original ticket
+/// request map onto `videos.status` / `videos.instance_id`: see
+/// [`EXPECTED_TABLES`]'s doc comment for why there is no separate
+/// `job_queue` table.
+pub async fn create_optimized_indexes(pool: &SqlitePool) -> Result<()> {
+    let statements: &[(&str, &str)] = &[
+        (
+            "idx_videos_status",
+            "CREATE INDEX IF NOT EXISTS idx_videos_status ON videos(status)",
+        ),
+        (
+            "idx_videos_created_at",
+            "CREATE INDEX IF NOT EXISTS idx_videos_created_at ON videos(created_at)",
+        ),
+        (
+            "idx_videos_status_created_at",
+            "CREATE INDEX IF NOT EXISTS idx_videos_status_created_at ON videos(status, created_at)",
+        ),
+        (
+            "idx_videos_instance_id_status",
+            "CREATE INDEX IF NOT EXISTS idx_videos_instance_id_status ON videos(instance_id, status)",
+        ),
+        (
+            "idx_conversion_logs_video_id",
+            "CREATE INDEX IF NOT EXISTS idx_conversion_logs_video_id ON conversion_logs(video_id)",
+        ),
+    ];
+
+    for (name, sql) in statements {
+        sqlx::query(sql)
+            .execute(pool)
+            .await
+            .with_context(|| format!("failed to create index '{name}'"))?;
+    }
+
+    // Refreshes SQLite's query planner statistics (equivalent to a
+    // lightweight `ANALYZE`) so the indexes just created are actually
+    // eligible to be picked by the planner immediately, rather than waiting
+    // for it to notice on its own. Cheap and safe to run on every startup.
+    sqlx::query("PRAGMA optimize")
+        .execute(pool)
+        .await
+        .context("failed to run PRAGMA optimize")?;
+
+    Ok(())
 }
 
 #[cfg(test)]
@@ -238,5 +356,76 @@ mod tests {
                 .unwrap();
         assert_eq!(status, "pending", "pre-existing row must survive migration");
         assert_eq!(attempts, 0, "new column must default to 0 on old rows");
+    }
+
+    #[tokio::test]
+    async fn test_verify_db_schema_passes_after_normal_startup() {
+        // `DbConnection::new` already calls `verify_db_schema` internally
+        // and would have failed startup if this didn't hold, but assert it
+        // directly too so a regression here fails with a specific message
+        // instead of just "DbConnection::new returned Err".
+        let dir = tempfile::tempdir().unwrap();
+        let db_path = dir.path().join("test.db");
+        let conn = DbConnection::new(&db_path).await.unwrap();
+
+        verify_db_schema(conn.pool()).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_verify_db_schema_reports_missing_table_by_name() {
+        let dir = tempfile::tempdir().unwrap();
+        let db_path = dir.path().join("test.db");
+        let conn = DbConnection::new(&db_path).await.unwrap();
+
+        // Simulate a corrupted/incomplete database by dropping a table
+        // `DbConnection::new` already successfully created.
+        sqlx::query("DROP TABLE conversion_logs")
+            .execute(conn.pool())
+            .await
+            .unwrap();
+
+        let err = verify_db_schema(conn.pool()).await.unwrap_err();
+        let message = format!("{err}");
+        assert!(
+            message.contains("conversion_logs"),
+            "error message should name the missing table, got: {message}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_create_optimized_indexes_creates_expected_indexes() {
+        let dir = tempfile::tempdir().unwrap();
+        let db_path = dir.path().join("test.db");
+        let conn = DbConnection::new(&db_path).await.unwrap();
+
+        for index in [
+            "idx_videos_status",
+            "idx_videos_created_at",
+            "idx_videos_status_created_at",
+            "idx_videos_instance_id_status",
+            "idx_conversion_logs_video_id",
+        ] {
+            let exists: i64 = sqlx::query_scalar(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type = 'index' AND name = ?",
+            )
+            .bind(index)
+            .fetch_one(conn.pool())
+            .await
+            .unwrap();
+            assert_eq!(exists, 1, "missing index {index}");
+        }
+    }
+
+    #[tokio::test]
+    async fn test_create_optimized_indexes_is_idempotent() {
+        // `DbConnection::new` already ran this once; calling it again
+        // directly (e.g. simulating a second startup against the same pool)
+        // must not error on "index already exists".
+        let dir = tempfile::tempdir().unwrap();
+        let db_path = dir.path().join("test.db");
+        let conn = DbConnection::new(&db_path).await.unwrap();
+
+        create_optimized_indexes(conn.pool()).await.unwrap();
+        create_optimized_indexes(conn.pool()).await.unwrap();
     }
 }
